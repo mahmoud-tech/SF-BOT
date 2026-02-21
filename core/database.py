@@ -35,16 +35,16 @@ import queue
 import sqlite3
 import threading
 import time
-from typing import Optional, cast
+from typing import Optional
 
 from core.config import config
 
 log = logging.getLogger("SF-BOT.db")
 
 
-# ----------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 #  Connection pool
-# ----------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 
 _POOL_SIZE = 4  # tune to your server's CPU count; 4 is plenty for a Discord bot
 
@@ -111,9 +111,9 @@ def _get_pool() -> _ConnectionPool:
     return _pool
 
 
-# ----------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 #  TTL cache
-# ----------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 
 
 class _TTLCache:
@@ -151,12 +151,13 @@ _TTL_SERVER_STATS = 120  # server stats refresh every 2 minutes
 _TTL_TOP_STREAK = 30  # #1 streak check refreshes every 30s
 
 
-# ----------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 #  Schema & init
-# ----------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
+    # Step 1 — create table (no-op if already exists)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS user_streaks (
             user_id             INTEGER PRIMARY KEY,
@@ -171,23 +172,10 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             month_start_date    TEXT
         )
     """)
-    # Indexes for every column used in WHERE or ORDER BY
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_score        ON user_streaks(score)        WHERE score > 0"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_streak_days  ON user_streaks(streak_days)  WHERE streak_days > 0"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_weekly       ON user_streaks(week_start_date,  weekly_score)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_monthly      ON user_streaks(month_start_date, monthly_score)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_last_post    ON user_streaks(last_post_date)"
-    )
 
+    # Step 2 — migrations BEFORE indexes
+    # Columns must exist before they can be indexed.
+    # This is what fixes the crash on existing databases.
     existing = {r[1] for r in conn.execute("PRAGMA table_info(user_streaks)")}
     migrations = {
         "score": "INTEGER NOT NULL DEFAULT 0",
@@ -204,6 +192,23 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             )
             log.info("Migration: added column '%s'.", col)
 
+    # Step 3 — indexes (IF NOT EXISTS makes these safe to run every startup)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_score       ON user_streaks(score)       WHERE score > 0"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_streak_days ON user_streaks(streak_days) WHERE streak_days > 0"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_weekly      ON user_streaks(week_start_date,  weekly_score)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_monthly     ON user_streaks(month_start_date, monthly_score)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_last_post   ON user_streaks(last_post_date)"
+    )
+
     conn.commit()
 
 
@@ -219,9 +224,9 @@ def init_db() -> None:
     )
 
 
-# ----------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 #  Period helpers
-# ----------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 
 
 def _week_start() -> str:
@@ -233,14 +238,14 @@ def _month_start() -> str:
     return datetime.date.today().replace(day=1).isoformat()
 
 
-# ----------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 #  Async wrappers — everything the cogs call
-# ----------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 #
 # Pattern: define a plain sync function (_fn), then wrap it with
 # asyncio.to_thread() so it runs in a thread pool and never blocks the loop.
 
-# ── record_post -------------------------------------------------------
+# ── record_post ───────────────────────────────────────────────────────────────
 
 
 def _record_post_sync(
@@ -376,7 +381,7 @@ async def get_user(user_id: int) -> Optional[sqlite3.Row]:
 def _leaderboard_alltime_sync(limit: int) -> list:
     hit, data = _cache.get("leaderboard_alltime")
     if hit:
-        return cast(list[dict], data)
+        return data
     with _get_pool().ctx() as conn:
         rows = conn.execute(
             """
@@ -398,7 +403,7 @@ async def get_leaderboard_alltime(limit: int = 10) -> list:
 def _leaderboard_streak_sync(limit: int) -> list:
     hit, data = _cache.get("leaderboard_streak")
     if hit:
-        return cast(list[dict], data)
+        return data
     with _get_pool().ctx() as conn:
         rows = conn.execute(
             """
@@ -420,7 +425,7 @@ async def get_leaderboard_streak(limit: int = 10) -> list:
 def _leaderboard_weekly_sync(limit: int) -> list:
     hit, data = _cache.get("leaderboard_weekly")
     if hit:
-        return cast(list[dict], data)
+        return data
     with _get_pool().ctx() as conn:
         rows = conn.execute(
             """
@@ -443,7 +448,7 @@ async def get_leaderboard_weekly(limit: int = 10) -> list:
 def _leaderboard_monthly_sync(limit: int) -> list:
     hit, data = _cache.get("leaderboard_monthly")
     if hit:
-        return cast(list[dict], data)
+        return data
     with _get_pool().ctx() as conn:
         rows = conn.execute(
             """
@@ -469,7 +474,7 @@ async def get_leaderboard_monthly(limit: int = 10) -> list:
 def _server_stats_sync() -> dict:
     hit, data = _cache.get("server_stats")
     if hit:
-        return cast(dict, data)
+        return data
 
     today_str = datetime.date.today().isoformat()
     with _get_pool().ctx() as conn:
@@ -515,7 +520,7 @@ async def get_server_stats() -> dict:
 def _top_streak_user_sync() -> Optional[dict]:
     hit, data = _cache.get("top_streak")
     if hit:
-        return cast(Optional[dict], data)
+        return data
     with _get_pool().ctx() as conn:
         row = conn.execute("""
             SELECT user_id, username, streak_days

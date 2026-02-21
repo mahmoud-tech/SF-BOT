@@ -89,7 +89,7 @@ class Config:
     DB_PATH: str = os.getenv("DP_PATH", "data/streaks.db")
 
     # --- Image Downlaod
-    IMAGE_DOWNLAOD_TIMEOUT: int = int(os.getenv("IMAGE_DOWNLOAD_TIMEOUT", 30))
+    IMAGE_DOWNLOAD_TIMEOUT: int = int(os.getenv("IMAGE_DOWNLOAD_TIMEOUT", 30))
 
     # --- Feature Flags
     features: Features = field(default_factory=Features)
