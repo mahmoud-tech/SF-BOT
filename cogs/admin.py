@@ -247,6 +247,41 @@ class AdminCog(commands.Cog):
             interaction.user,
         )
 
+    # ── /set-streak ───────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="set-streak",
+        description="Set a user's current streak to any number (Admin)",
+    )
+    @app_commands.describe(user="Target user", days="New streak value in days")
+    @app_commands.check(not_image_channel)
+    async def set_streak_cmd(
+        self, interaction: discord.Interaction, user: discord.Member, days: int
+    ) -> None:
+        if not config.features.ADMIN_SET_STREAK:
+            return await interaction.response.send_message(
+                "This feature is disabled.", ephemeral=True
+            )
+        if not is_admin(interaction):
+            return await interaction.response.send_message(
+                "❌ Admins only.", ephemeral=True
+            )
+        if days < 0:
+            return await interaction.response.send_message(
+                "❌ Streak days cannot be negative.", ephemeral=True
+            )
+        await db.admin_set_streak(user.id, user.display_name, days)
+        await interaction.response.send_message(
+            f"✅ Set {user.mention}'s streak to **{days} day(s)** 🔥",
+            ephemeral=True,
+        )
+        log.info(
+            "Admin set streak: %s → %d days (by %s)",
+            user.display_name,
+            days,
+            interaction.user,
+        )
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(AdminCog(bot))

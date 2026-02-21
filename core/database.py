@@ -629,3 +629,23 @@ def _admin_reset_streak_sync(user_id: int) -> None:
 
 async def admin_reset_streak(user_id: int) -> None:
     await asyncio.to_thread(_admin_reset_streak_sync, user_id)
+
+
+def _admin_set_streak_sync(user_id: int, username: str, days: int) -> None:
+    with _get_pool().ctx() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_streaks (user_id, username, streak_days, best_streak)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username    = excluded.username,
+                streak_days = excluded.streak_days,
+                best_streak = MAX(best_streak, excluded.best_streak)
+        """,
+            (user_id, username, days, days),
+        )
+    _cache.invalidate("leaderboard_streak", "top_streak", "server_stats")
+
+
+async def admin_set_streak(user_id: int, username: str, days: int) -> None:
+    await asyncio.to_thread(_admin_set_streak_sync, user_id, username, days)

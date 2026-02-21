@@ -48,6 +48,7 @@ class Features:
     ADMIN_ADD_SCORE: bool = True  # /add-score
     ADMIN_RESET_SCORE: bool = True  # /reset-score
     ADMIN_RESET_STREAK: bool = True  # /reset-streak
+    ADMIN_SET_STREAK: bool = True  # /set-streak
 
 
 # ══════════════════════════════════════════════════════════════════════════════
