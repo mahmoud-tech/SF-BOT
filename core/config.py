@@ -29,8 +29,8 @@ class Features:
 
     # Notifications — each can be independently toggled.
     # Requires the matching channel ID to be set below (NOTIFY_STREAK_LOSS_CHANNEL_ID etc.)
-    NOTIFY_STREAK_LOSS: bool = True  # @user Lost their streak
-    NOTIFY_NEW_NUMBER_ONE: bool = True  # @user is now #1 on the leaderboard!
+    NOTIFY_STREAK_LOSS: bool = False  # @user Lost their streak
+    NOTIFY_NEW_NUMBER_ONE: bool = False  # @user is now #1 on the leaderboard!
 
     # Milestones
     STREAK_MILESTONES: bool = (
