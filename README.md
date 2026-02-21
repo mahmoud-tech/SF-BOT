@@ -49,7 +49,7 @@ Open `core/config.py` and flip any flag in the `Features` class to `False` to di
 class Features:
     LEADERBOARD_ALLTIME:   bool = True 
     LEADERBOARD_MONTHLY:   bool = True 
-    LEADERBOARD_WEEKLY:    bool = Truث
+    LEADERBOARD_WEEKLY:    bool = True
     NOTIFY_STREAK_LOSS:    bool = True 
     NOTIFY_NEW_NUMBER_ONE: bool = True
     STREAK_MILESTONES:     bool = True 
@@ -149,5 +149,3 @@ since you're using railway
 i tested the proejct before sumbitting
 all you need to an environment variable in railway
 DISCORD_TOKEN -> your bot token goes here.
-6. A **nightly task** (midnight) resets streaks for users who missed yesterday and fires 💀 notifications.
-7. **Best streak** is tracked separately and never decremented.
