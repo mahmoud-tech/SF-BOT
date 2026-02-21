@@ -143,5 +143,11 @@ When a user posts their first image in a new week or month, their weekly/monthly
 2. Bot downloads the image, deletes the original, re-posts it with a caption.
 3. **+1 points** awarded (once per calendar day — no double-posting).
 4. Consecutive daily posts increment the streak; missing a day resets it to 1.
-5. A **nightly task** (midnight) resets streaks for users who missed yesterday and fires 💀 notifications.
-6. **Best streak** is tracked separately and never decremented.
+
+## Testing 
+since you're using railway
+i tested the proejct before sumbitting
+all you need to an environment variable in railway
+DISCORD_TOKEN -> your bot token goes here.
+6. A **nightly task** (midnight) resets streaks for users who missed yesterday and fires 💀 notifications.
+7. **Best streak** is tracked separately and never decremented.
