@@ -114,43 +114,51 @@ class StreaksCog(commands.Cog):
             db.record_post(message.author.id, message.author.display_name),
         )
 
-        if already_posted or not image_data:
+        if not image_data:
             return
 
         await message.delete()
 
         icon = "🔥" if streak_days >= 3 else "⭐" if streak_days >= 2 else "📸"
-        caption = (
-            f"📸 {message.author.mention}'s streak: **{streak_days} day(s)** {icon} "
-            f"| Score: **{new_score}** 🏆"
-        )
+
+        if already_posted:
+            # Already checked in today — repost image but no score/streak change
+            caption = f"📸 {message.author.mention} already checked in today! Streak: **{streak_days} day(s)** {icon} | Score: **{new_score}** 🏆"
+        else:
+            caption = (
+                f"📸 {message.author.mention}'s streak: **{streak_days} day(s)** {icon} "
+                f"| Score: **{new_score}** 🏆"
+            )
+
         file = discord.File(io.BytesIO(image_data), filename="streak_image.png")
         await message.channel.send(content=caption, file=file)
 
-        # Milestone
-        if config.features.STREAK_MILESTONES and milestone:
-            await message.channel.send(
-                f"{message.author.mention} {config.MILESTONES[milestone]}"
-            )
+        if not already_posted:
+            # Milestone
+            if config.features.STREAK_MILESTONES and milestone:
+                await message.channel.send(
+                    f"{message.author.mention} {config.MILESTONES[milestone]}"
+                )
 
-        # #1 check — uses cached result, not a fresh DB query every post
-        if config.features.NOTIFY_NEW_NUMBER_ONE:
-            top = await db.get_top_streak_user()
-            if top and top["user_id"] == message.author.id:
-                if self._prev_number_one != message.author.id:
-                    self._prev_number_one = message.author.id
-                    await self._send_to_channel(
-                        config.NOTIFY_NUMBER_ONE_CHANNEL_ID,
-                        new_number_one_message(
-                            message.author.mention, streak_days
-                        ),
-                    )
+            # #1 check
+            if config.features.NOTIFY_NEW_NUMBER_ONE:
+                top = await db.get_top_streak_user()
+                if top and top["user_id"] == message.author.id:
+                    if self._prev_number_one != message.author.id:
+                        self._prev_number_one = message.author.id
+                        await self._send_to_channel(
+                            config.NOTIFY_NUMBER_ONE_CHANNEL_ID,
+                            new_number_one_message(
+                                message.author.mention, streak_days
+                            ),
+                        )
 
         log.info(
-            "Post: %s → streak=%d score=%d",
+            "Post: %s → streak=%d score=%d already_posted=%s",
             message.author.display_name,
             streak_days,
             new_score,
+            already_posted,
         )
 
     # ── Nightly task ──────────────────────────────────────────────────────────
