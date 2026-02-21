@@ -88,7 +88,7 @@ class Config:
     )
 
     # ── Scoring ───────────────────────────────────────────────────────────────
-    POINTS_PER_POST: int = int(os.getenv("POINTS_PER_POST", 3))
+    POINTS_PER_POST: int = int(os.getenv("POINTS_PER_POST", 1))
 
     # ── Streak milestones ─────────────────────────────────────────────────────
     # Format: {streak_days: "celebration message"}
