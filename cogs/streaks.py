@@ -1,10 +1,12 @@
 """
-cogs/streaks.py — Image processing + user-facing slash commands.
+cogs/streaks.py — Image processing + all user-facing slash commands.
 
-Slash commands: /streak  /score  /leaderboard  /streak_leaderboard  /user_stats
+All db.* calls are now async (run in thread pool via asyncio.to_thread).
+Nightly notifications are sent concurrently via asyncio.gather().
 """
 
 import asyncio
+import datetime
 import io
 import logging
 from typing import Optional
@@ -14,11 +16,15 @@ import core.database as db
 import discord
 from core.config import config
 from core.ui import (
-    build_leaderboard_embed,
-    build_score_embed,
+    build_leaderboard_alltime,
+    build_leaderboard_monthly,
+    build_leaderboard_streak,
+    build_leaderboard_weekly,
+    build_server_stats,
     build_streak_embed,
     build_user_stats_embed,
-    streak_emoji,
+    new_number_one_message,
+    streak_loss_message,
 )
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -26,14 +32,14 @@ from discord.ext import commands, tasks
 log = logging.getLogger("SF-BOT.streaks")
 
 
-# ── Check: block commands inside image channels ───────────────────────────────
+# ── Check ─────────────────────────────────────────────────────────────────────
 
 
 def not_image_channel(interaction: discord.Interaction) -> bool:
     return interaction.channel_id not in config.IMAGE_CHANNEL_IDS
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Image download ────────────────────────────────────────────────────────────
 
 
 async def download_image(
@@ -57,18 +63,32 @@ class StreaksCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._http: Optional[aiohttp.ClientSession] = None
+        self._prev_number_one: Optional[int] = None
 
     async def cog_load(self) -> None:
         self._http = aiohttp.ClientSession()
-        self.expire_streaks.start()
+        self.nightly_task.start()
         log.info("StreaksCog loaded.")
 
     async def cog_unload(self) -> None:
-        self.expire_streaks.cancel()
+        self.nightly_task.cancel()
         if self._http:
             await self._http.close()
 
-    # ── Image processing ──────────────────────────────────────────────────────
+    # ── Notification helper ───────────────────────────────────────────────────
+
+    async def _send_to_channel(
+        self, channel_id: Optional[int], message: str
+    ) -> None:
+        if not channel_id:
+            return
+        ch = self.bot.get_channel(channel_id)
+        if ch:
+            await ch.send(message)
+        else:
+            log.warning("Notification channel %s not found.", channel_id)
+
+    # ── on_message — image processing ─────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -85,45 +105,78 @@ class StreaksCog(commands.Cog):
         if not images:
             return
 
-        # Download before deleting so the URL stays valid
-        image_data = await download_image(self._http, images[0].url)
-        if not image_data:
+        # Download and DB write run concurrently — both are non-blocking
+        (
+            image_data,
+            (streak_days, new_score, already_posted, milestone),
+        ) = await asyncio.gather(
+            download_image(self._http, images[0].url),
+            db.record_post(message.author.id, message.author.display_name),
+        )
+
+        if already_posted or not image_data:
             return
 
         await message.delete()
 
-        streak_days, new_score = db.record_post(
-            message.author.id, message.author.display_name
-        )
-        caption_icon = (
-            "🔥" if streak_days >= 3 else "⭐" if streak_days >= 2 else "📸"
-        )
+        icon = "🔥" if streak_days >= 3 else "⭐" if streak_days >= 2 else "📸"
         caption = (
-            f"📸 {message.author.mention}'s streak: **{streak_days} day(s)** {caption_icon} "
+            f"📸 {message.author.mention}'s streak: **{streak_days} day(s)** {icon} "
             f"| Score: **{new_score}** 🏆"
         )
         file = discord.File(io.BytesIO(image_data), filename="streak_image.png")
         await message.channel.send(content=caption, file=file)
+
+        # Milestone
+        if config.features.STREAK_MILESTONES and milestone:
+            await message.channel.send(
+                f"{message.author.mention} {config.MILESTONES[milestone]}"
+            )
+
+        # #1 check — uses cached result, not a fresh DB query every post
+        if config.features.NOTIFY_NEW_NUMBER_ONE:
+            top = await db.get_top_streak_user()
+            if top and top["user_id"] == message.author.id:
+                if self._prev_number_one != message.author.id:
+                    self._prev_number_one = message.author.id
+                    await self._send_to_channel(
+                        config.NOTIFY_NUMBER_ONE_CHANNEL_ID,
+                        new_number_one_message(
+                            message.author.mention, streak_days
+                        ),
+                    )
+
         log.info(
-            "Processed image: %s → streak=%d score=%d",
+            "Post: %s → streak=%d score=%d",
             message.author.display_name,
             streak_days,
             new_score,
         )
 
-    # ── Nightly streak expiry ─────────────────────────────────────────────────
+    # ── Nightly task ──────────────────────────────────────────────────────────
 
     @tasks.loop(hours=24)
-    async def expire_streaks(self) -> None:
-        count = db.expire_old_streaks()
-        log.info("Nightly expiry: reset %d streak(s).", count)
+    async def nightly_task(self) -> None:
+        victims = await db.expire_old_streaks()
+        log.info("Nightly expiry: reset %d streak(s).", len(victims))
 
-    @expire_streaks.before_loop
-    async def before_expire(self) -> None:
+        # Send all notifications concurrently instead of one-by-one
+        if config.features.NOTIFY_STREAK_LOSS and victims:
+            await asyncio.gather(
+                *[
+                    self._send_to_channel(
+                        config.NOTIFY_STREAK_LOSS_CHANNEL_ID,
+                        streak_loss_message(username, lost_streak),
+                    )
+                    for _, username, lost_streak in victims
+                ]
+            )
+
+    @nightly_task.before_loop
+    async def before_nightly(self) -> None:
         await self.bot.wait_until_ready()
-        # Wait until the next midnight before starting
-        now = __import__("datetime").datetime.now()
-        midnight = (now + __import__("datetime").timedelta(days=1)).replace(
+        now = datetime.datetime.now()
+        midnight = (now + datetime.timedelta(days=1)).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         await asyncio.sleep((midnight - now).total_seconds())
@@ -131,105 +184,136 @@ class StreaksCog(commands.Cog):
     # ── /streak ───────────────────────────────────────────────────────────────
 
     @app_commands.command(
-        name="streak", description="Check your current streak"
+        name="streak", description="Check your current streak and stats"
     )
     @app_commands.check(not_image_channel)
     async def streak_cmd(self, interaction: discord.Interaction) -> None:
-        row = db.get_user(interaction.user.id)
+        row = await db.get_user(interaction.user.id)
         if not row:
             embed = discord.Embed(
                 title="🔥 Your Streak",
-                description="You haven't started yet! Post an image to begin.",
+                description="You haven't posted yet! Post an image to start your streak.",
                 color=0xFFA500,
             )
         else:
             embed = build_streak_embed(
-                row["streak_days"], row["last_post_date"], row["score"]
+                member=interaction.user,
+                streak_days=row["streak_days"],
+                best_streak=row["best_streak"],
+                last_post_date=row["last_post_date"],
+                score=row["score"],
             )
         await interaction.response.send_message(embed=embed)
 
-    # ── /score ────────────────────────────────────────────────────────────────
+    # ── /user-stats @user ─────────────────────────────────────────────────────
 
     @app_commands.command(
-        name="score", description="Check your score and stats"
-    )
-    @app_commands.check(not_image_channel)
-    async def score_cmd(self, interaction: discord.Interaction) -> None:
-        row = db.get_user(interaction.user.id)
-        if not row:
-            embed = discord.Embed(
-                title="🏆 Your Stats",
-                description="No stats yet — post an image to start earning points!",
-                color=0xFFA500,
-            )
-        else:
-            embed = build_score_embed(
-                row["streak_days"], row["last_post_date"], row["score"]
-            )
-        await interaction.response.send_message(embed=embed)
-
-    # ── /leaderboard ──────────────────────────────────────────────────────────
-
-    @app_commands.command(
-        name="leaderboard", description="Top 10 users by score"
-    )
-    @app_commands.check(not_image_channel)
-    async def leaderboard_cmd(self, interaction: discord.Interaction) -> None:
-        leaders = db.get_leaderboard("score")
-        embed = build_leaderboard_embed(
-            title="🏆 Score Leaderboard",
-            description="Top 10 by total score",
-            color=0xFFD700,
-            leaders=leaders,
-            value_fn=lambda r: (
-                f"**{r['score']} pts** | {r['streak_days']} day streak"
-            ),
-        )
-        await interaction.response.send_message(embed=embed)
-
-    # ── /streak_leaderboard ───────────────────────────────────────────────────
-
-    @app_commands.command(
-        name="streak_leaderboard", description="Top 10 users by streak length"
-    )
-    @app_commands.check(not_image_channel)
-    async def streak_leaderboard_cmd(
-        self, interaction: discord.Interaction
-    ) -> None:
-        leaders = db.get_leaderboard("streak_days")
-        embed = build_leaderboard_embed(
-            title="🔥 Streak Leaderboard",
-            description="Top 10 by current streak",
-            color=0xFF6B6B,
-            leaders=leaders,
-            value_fn=lambda r: (
-                f"**{r['streak_days']} days** {streak_emoji(r['streak_days'])} | {r['score']} pts"
-            ),
-        )
-        await interaction.response.send_message(embed=embed)
-
-    # ── /user_stats ───────────────────────────────────────────────────────────
-
-    @app_commands.command(
-        name="user_stats", description="Check another user's stats"
+        name="user-stats", description="Check another user's streak and stats"
     )
     @app_commands.describe(user="The user to look up")
     @app_commands.check(not_image_channel)
     async def user_stats_cmd(
         self, interaction: discord.Interaction, user: discord.Member
     ) -> None:
-        row = db.get_user(user.id)
-        if row:
-            embed = build_user_stats_embed(
-                user, row["streak_days"], row["last_post_date"], row["score"]
+        if not config.features.USER_STATS:
+            return await interaction.response.send_message(
+                "This feature is disabled.", ephemeral=True
             )
-        else:
+        row = await db.get_user(user.id)
+        if not row:
             embed = discord.Embed(
                 title=f"📊 {user.display_name}'s Stats",
                 description="This user hasn't posted any images yet!",
                 color=0xFFA500,
             )
+        else:
+            embed = build_user_stats_embed(
+                member=user,
+                streak_days=row["streak_days"],
+                best_streak=row["best_streak"],
+                last_post_date=row["last_post_date"],
+                score=row["score"],
+                weekly_score=row["weekly_score"],
+                monthly_score=row["monthly_score"],
+            )
         await interaction.response.send_message(embed=embed)
+
+    # ── /leaderboard ──────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="leaderboard", description="All-time top 10 by score"
+    )
+    @app_commands.check(not_image_channel)
+    async def leaderboard_cmd(self, interaction: discord.Interaction) -> None:
+        if not config.features.LEADERBOARD_ALLTIME:
+            return await interaction.response.send_message(
+                "This feature is disabled.", ephemeral=True
+            )
+        await interaction.response.send_message(
+            embed=build_leaderboard_alltime(await db.get_leaderboard_alltime())
+        )
+
+    # ── /leaderboard-streak ───────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="leaderboard-streak", description="Top 10 by current streak length"
+    )
+    @app_commands.check(not_image_channel)
+    async def leaderboard_streak_cmd(
+        self, interaction: discord.Interaction
+    ) -> None:
+        await interaction.response.send_message(
+            embed=build_leaderboard_streak(await db.get_leaderboard_streak())
+        )
+
+    # ── /leaderboard-weekly ───────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="leaderboard-weekly", description="Top 10 by score this week"
+    )
+    @app_commands.check(not_image_channel)
+    async def leaderboard_weekly_cmd(
+        self, interaction: discord.Interaction
+    ) -> None:
+        if not config.features.LEADERBOARD_WEEKLY:
+            return await interaction.response.send_message(
+                "This feature is disabled.", ephemeral=True
+            )
+        await interaction.response.send_message(
+            embed=build_leaderboard_weekly(await db.get_leaderboard_weekly())
+        )
+
+    # ── /leaderboard-monthly ──────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="leaderboard-monthly", description="Top 10 by score this month"
+    )
+    @app_commands.check(not_image_channel)
+    async def leaderboard_monthly_cmd(
+        self, interaction: discord.Interaction
+    ) -> None:
+        if not config.features.LEADERBOARD_MONTHLY:
+            return await interaction.response.send_message(
+                "This feature is disabled.", ephemeral=True
+            )
+        await interaction.response.send_message(
+            embed=build_leaderboard_monthly(await db.get_leaderboard_monthly())
+        )
+
+    # ── /server-stats ─────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="server-stats", description="Server-wide streak statistics"
+    )
+    @app_commands.check(not_image_channel)
+    async def server_stats_cmd(self, interaction: discord.Interaction) -> None:
+        if not config.features.SERVER_STATS:
+            return await interaction.response.send_message(
+                "This feature is disabled.", ephemeral=True
+            )
+        await interaction.response.send_message(
+            embed=build_server_stats(await db.get_server_stats())
+        )
 
 
 async def setup(bot: commands.Bot) -> None:
